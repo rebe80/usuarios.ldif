@@ -1,0 +1,125 @@
+
+
+--------
+--user--
+--------
+
+#!/bin/bash
+
+#Obtener usuarios con uidNumber >= 1000
+# Usar awk para mayor precisión con el UID
+awk -F: '$3 >= 1000 {print}' /etc/passwd > tmp.txt
+
+#Crear o reiniciar archivo ldif
+>tmp.ldif
+
+#Recorrer el archivo tmp.txt con la lista de usuarios
+while read linea
+do
+    #Mostrar la línea que vamos a procesar
+    echo "$linea"
+
+    #Obtener datos
+    uid=$(echo "$linea" | cut -d: -f1) # El primer campo, separando con :
+    
+    # --- MODIFICACIÓN CLAVE AQUÍ ---
+    # Obtener el campo GECOS completo
+    gecos_field=$(echo "$linea" | cut -d: -f5)
+
+    # Limpiar el campo GECOS de posibles partes entre paréntesis y espacios
+    clean_gecos=$(echo "$gecos_field" | sed 's/([^)]*)//g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    
+    # Intentar obtener el nombre completo principal (antes de la primera coma)
+    nomComp=$(echo "$clean_gecos" | cut -d, -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    # Si nomComp está vacío, usar el uid como fallback para cn
+    if [ -z "$nomComp" ]; then
+        nomComp=$uid
+    fi
+    # --- FIN MODIFICACIÓN CLAVE ---
+
+    nomArray=($nomComp) #Convierte el nombre en un array de palabras
+    nom=${nomArray[0]}
+    if [ "$nom" == "" ]
+    then
+        nom=$uid
+    fi
+    ape=${nomArray[1]}
+    if [ "$ape" == "" ]
+    then
+        ape=$uid
+    fi
+    inic=$(echo "$nom" | cut -c 1)$(echo "$ape" | cut -c 1)
+    uidNum=$(echo "$linea" | cut -d: -f3)
+    usrPass=$(grep "$uid:" /etc/shadow | cut -d: -f2) # ATENCIÓN: Revisar seguridad de esto
+    shell=$(echo "$linea" | cut -d: -f7)
+    homedir=$(echo "$linea" | cut -d: -f6)
+
+    #Volcar datos al archivo ldif
+    echo "dn: uid=$uid,ou=usuarios,dc=aso,dc=local" >> tmp.ldif # Corregí ou=unidad a ou=usuarios según tu salida
+    echo "objectClass: inetOrgPerson" >> tmp.ldif
+    echo "objectClass: posixAccount" >> tmp.ldif
+    echo "uid: $uid" >> tmp.ldif
+    echo "sn: $ape" >> tmp.ldif
+    echo "givenName: $nom" >> tmp.ldif
+    echo "cn: $nomComp" >> tmp.ldif # Aquí es donde $nomComp se usa
+    echo "uidNumber: $uidNum" >> tmp.ldif
+    echo "gidNumber: 10000" >> tmp.ldif
+    echo "userPassword: $usrPass" >> tmp.ldif
+    echo "loginShell: $shell" >> tmp.ldif
+    echo "homeDirectory: $homedir" >> tmp.ldif
+
+    echo >> tmp.ldif
+done < tmp.txt
+
+#Añadimos los nuevos usuarios a LDAP
+# Nota: La salida de tu imagen muestra ou=usuarios,dc=aso,dc=local. Asegúrate de que tu DN de admin sea el correcto para tu LDAP.
+ldapadd -x -D cn=admin,dc=aso,dc=local -W -f tmp.ldif # Ajusté el admin DN
+rm tmp.txt
+rm tmp.ldif
+
+----------
+----------
+--grupos--
+----------
+----------
+#!/bin/bash
+
+#Obtener grupos con uidNumber >= 1000
+
+grep "x:[1-9][0-9][0-9][0-9]:" /etc/group > tmp.txt
+
+#Crear o reiniciar archivo ldif
+>tmp.ldif
+
+#Recorrer el archivo tmp.txt con la lista de grupos
+while read linea
+do
+   #Mostrar la línea que vamos a procesar
+   echo "$linea"
+
+   #Obtener datos
+   cn=$(echo $linea | cut -d: -f1) # El primer campo, separando con :
+   gid=$(echo $linea | cut -d: -f3)
+   usuarios=$(echo $linea | cut -d: -f4 | sed "s/,/ /g")
+
+   #Volcar datos al archivo ldif
+   echo "dn: cn=$cn,ou=grupos,dc=aso,dc=local" >> tmp.ldif
+   echo "objectClass: posixGroup" >> tmp.ldif
+   echo "cn: $cn" >> tmp.ldif
+   echo "gidNumber: $gid" >> tmp.ldif
+   echo "" >> tmp.ldif
+
+   #añadir usuarios
+   for usuario in ${usuarios} ; do
+        echo "memberUid: ${usuario}" >> tmp.ldif
+   done
+done < tmp.txt
+
+#Añadimos los nuevos grupos a LDAP
+ldapadd -x -D cn=admin,dc=aso,dc=local -W -f tmp.ldif
+rm tmp.txt
+rm tmp.ldif
+
+
+
